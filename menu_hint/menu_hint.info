@@ -1,0 +1,13 @@
+name = "Menu Hint"
+description = "Provides a direct connection between the menu and page items."
+package = Menu
+
+core = 7.x
+dependencies[] = menu (>7.11)
+dependencies[] = entity
+
+files[] = includes/menu_hint.info.inc
+
+version = "7.x-1.0-alpha1"
+core = "7.x"
+

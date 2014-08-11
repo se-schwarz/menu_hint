@@ -1,0 +1,264 @@
+<?php
+
+/**
+ * Loads the menu_hints for the loaded nodes and injects them into the node object
+ * @param $nodes
+ * @param $types
+ */
+function menu_hint_node_load($nodes, $types) {
+  foreach ($nodes as $node) {
+    $hint = menu_hint_get_for($node);
+    if (isset($hint->hints))
+    {
+      $node->menu_hint_suggestion = explode("\r\n", trim($hint->hints));
+    } else {
+      $node->menu_hint_suggestion = array();
+    }
+  }
+}
+
+/**
+ * Implements hook_init().
+ *
+ * Set the correct menu item before everything is rendered
+ */
+function menu_hint_init() {
+  // Try to get a node
+  $node = menu_get_object();
+  if (!$node) return;
+  $variables = array(
+    'hints' => &$node->menu_hint_suggestion,
+    'node' => &$node,
+  );
+  drupal_alter('preprocess_node_menu_hints', $variables);
+  drupal_alter('preprocess_node_'.$node->type.'_menu_hints', $variables);
+  //We have a node, and we have suggestions, so lets find a matching menu item
+  $menu_hints = $node->menu_hint_suggestion;
+  foreach(menu_get_menus(true) as $key => $name) {
+    if ($key != 'main-menu') continue;
+    $tree = menu_build_tree($key);
+    foreach($menu_hints as $menu_hint) {
+      $active_trail = array();
+      $match = menu_hint_find_match($tree, $menu_hint, $active_trail);
+      // Add the Home Link to the active trail
+      $active_trail[] = array(
+        'title' => t('Home'),
+        'href' => '<front>',
+        'link_path' => '',
+        'localized_options' => array(),
+        'type' => 0,
+      );
+      // We filled the active trail backwards after we found a match, so we have to reverse it
+      $active_trail = array_reverse($active_trail);
+      if ($match) {
+        menu_set_active_trail($active_trail);
+        menu_tree_set_path($key, $match['link']['link_path']);
+      }
+    }
+  }
+}
+
+/**
+ * @param $tree
+ * @param $menu_hint
+ * @param $active_trail
+ * @return bool
+ */
+function menu_hint_find_match($tree, $menu_hint, &$active_trail) {
+  foreach($tree as $key => $element) {
+    if ($element['link']['link_path'] == $menu_hint) {
+      $active_trail[] = $element['link'];
+      return $element;
+    }
+    $found = false;
+    if ($element['below']) {
+      $found = menu_hint_find_match($element['below'], $menu_hint, $active_trail);
+    }
+    if ($found) {
+      $active_trail[] = $element['link'];
+      return $found;
+    }
+  }
+  return false;
+}
+
+/**
+ * Implemtens hook_form_node_form_alter.
+ *
+ * Adds the menu hint config menu to the node form
+ * @param $form
+ * @param $form_state
+ */
+function menu_hint_form_node_form_alter(&$form, $form_state) {
+  $mhint = menu_hint_get_for($form['#node']);
+  $whint = entity_metadata_wrapper('menu_hint', $mhint);
+  $form['menu_hint'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Menu hints'),
+    '#access' => user_access('administer menu'),
+    '#collapsible' => TRUE,
+    '#group' => 'additional_settings',
+    '#attached' => array(
+      'js' => array(drupal_get_path('module', 'menu_hint') . '/js/menu_hint.js')
+    ),
+    '#tree' => TRUE,
+    '#weight' => 10,
+    '#attributes' => array('class' => array('menu-hint-form'))
+  );
+
+  $form['menu_hint']['enabled'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Use menu hints'),
+    '#default_value' => $whint->enabled->value()
+  );
+  $form['menu_hint']['hints']  = array(
+    '#type' => 'textarea',
+    '#title' => t('Hints'),
+    '#description' => t(
+      'Specify hints by using their paths. Enter one path per line.'
+    ),
+    '#default_value' => $whint->hints->value()
+  );
+}
+
+/**
+ * Implements hook_node_insert
+ *
+ * Calls _set_menu_hint_for($node).
+ * @param $node
+ */
+function menu_hint_node_insert($node) {
+  _set_menu_hint_for($node);
+}
+
+
+/**
+ * Implements hook_node_update
+ *
+ * Calls _set_menu_hint_for($node).
+ * @param $node
+ */
+function menu_hint_node_update($node) {
+  _set_menu_hint_for($node);
+}
+
+/**
+ * Saves a menu_hint for the given node
+ * @param $node
+ */
+function _set_menu_hint_for($node) {
+  //Just for functionality reasons, if the module is activated this should never happen.
+  if (!isset($node->menu_hint)) return;
+  $hint = menu_hint_get_for($node);
+  $whint = entity_metadata_wrapper('menu_hint', $hint);
+  $whint->enabled->set($node->menu_hint['enabled']);
+  $whint->hints->set($node->menu_hint['hints']);
+  $whint->save();
+}
+
+/**
+ * Returns an existing or new created menu_hint, can be determined via "is_new" in the returned array
+ * @param $node
+ * @return bool|\Drupal\Core\Entity\EntityInterface|mixed
+ */
+function menu_hint_get_for($node) {
+  // We have no nid now, its probably a new node, so just return an empty menu_hint
+  if (!isset($node->nid))
+    return entity_create('menu_hint', array());
+  $query = new EntityFieldQuery();
+  $query
+    ->entityCondition('entity_type', 'menu_hint')
+    ->propertyCondition('enabled', 1, '=')
+    ->propertyCondition('nid', $node->nid, '=');
+  $result = $query->execute();
+  if (isset($result['menu_hint'])) {
+    $hint = entity_load('menu_hint', array_keys($result['menu_hint']));
+    return array_shift($hint);
+  } else {
+    return entity_create('menu_hint', array(
+      'nid' => $node->nid
+    ));
+  }
+}
+
+
+function menu_hint_menu_breadcrumb_alter(&$active_trail, $item) {
+  $menu_trail = menu_get_active_trail();
+}
+
+
+class MenuHint extends Entity {
+  protected function defaultUri() {
+    return array('path' => 'menu-hint/' . $this->identifier());
+  }
+
+  protected function defaultLabel() {
+    return 'Menu hint';
+  }
+}
+
+class MenuHintController extends EntityAPIController {
+  //We use EntityAPIController functions only, but just in case we need it sometimes
+}
+
+/**
+ * Implements hook_enity_info().
+ *
+ * @return array
+ */
+function menu_hint_entity_info() {
+  $entities = array(
+    'menu_hint' => array(
+      'label' => t('Menu hint'),
+      'entity class' => 'MenuHint',
+      'controller class' => 'MenuHintController',
+      'base table' => 'menu_hint',
+      'load hook' => 'menu_hint_load',
+      'label callback' => 'entity_class_label',
+      'uri callback' => 'entity_class_uri',
+      'module' => 'menu_hint',
+      'entity keys' => array(
+        'id' => 'mhid',
+      )
+    )
+  );
+  return $entities;
+}
+
+/**
+ * Implements hook_entity_property_info().
+ *
+ * @return array
+ */
+function menu_hint_entity_property_info() {
+  $info = array();
+  $properties = &$info['menu_hint']['properties'];
+  $properties['mhid'] = array(
+    'label' => t('Menu hint ID'),
+    'type' => 'integer',
+    'description' => t('The unique ID of the menu hint.'),
+    'schema field' => 'mhid',
+  );
+  $properties['nid'] = array(
+    'label' => t('Node id'),
+    'type' => 'integer',
+    'description' => t('The unique node id which the menu hints are bound to.'),
+    'schema field' => 'nid',
+    'setter callback' => 'entity_property_verbatim_set',
+  );
+  $properties['enabled'] = array(
+    'label' => t('Menu hints enabled'),
+    'type' => 'boolean',
+    'description' => t('Boolean that indicates whether the hints are used or not'),
+    'schema field' => 'enabled',
+    'setter callback' => 'entity_property_verbatim_set',
+  );
+  $properties['hints'] = array(
+    'label' => t('Menu hints'),
+    'type' => 'text',
+    'description' => t('The schema hints'),
+    'schema field' => 'hints',
+    'setter callback' => 'entity_property_verbatim_set',
+  );
+  return $info;
+}
